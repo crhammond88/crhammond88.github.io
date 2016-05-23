@@ -1,0 +1,157 @@
+---
+title: "Practical Machine Learning Prediction Project"
+author: "Chris Hammond"
+date: "Thursday, May 19, 2016"
+output: html_document
+---
+# Project Instructions
+### Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Data
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+### What you should submit
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+#### Peer Review Portion
+Your submission for the Peer Review portion should consist of a link to a Github repo with your R markdown and compiled HTML file describing your analysis. Please constrain the text of the writeup to < 2000 words and the number of figures to be less than 5. It will make it easier for the graders if you submit a repo with a gh-pages branch so the HTML page can be viewed online (and you always want to make it easy on graders :-).
+
+#### Course Project Prediction Quiz Portion
+Apply your machine learning algorithm to the 20 test cases available in the test data above and submit your predictions in appropriate format to the Course Project Prediction Quiz for automated grading.
+
+### Reproducibility
+Due to security concerns with the exchange of R code, your code will not be run during the evaluation by your classmates. Please be sure that if they download the repo, they will be able to view the compiled HTML version of your analysis.
+
+---
+
+# Setup & Data Wrangling
+Load the necessary libraries and set the seed for reproducibility.
+```{r warning=FALSE, message=FALSE}
+library(data.table) # Use install.packages() to download libraries from CRAN
+library(caret)
+library(rpart)
+library(rattle)
+set.seed(1337)
+```
+Enable and setup parallel processing for caret to increase calculation speed on complex models. Set the train method to cross-validation for a good balanace of performance and accuracy.
+```{r warning=FALSE, message=FALSE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # Convention to leave 1 core for OS
+```
+Load the data.
+```{r cache=TRUE}
+dataUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv" # Load data from the web
+quizUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+data <- fread(dataUrl, na.strings=c("NA","#DIV/0!",""))
+quiz <- fread(quizUrl, na.strings=c("NA","#DIV/0!","")) 
+# data <- fread("pml-training.csv", na.strings=c("NA","#DIV/0!","")) # Load data from Working Directory
+# quiz <- fread("pml-testing.csv", na.strings=c("NA","#DIV/0!",""))
+```
+Clean the data and select useful features. Remove the irrelevant id variable. Remove variables containing NAs in the test set. Remove variables with near zero variance variables.
+```{r}
+# Use names(data) to view the variables in the dataset
+data <- data[,-c(1), with=FALSE]; quiz <- quiz[,-c(1), with=FALSE] # Removing user id
+data$user_name <- as.factor(data$user_name);quiz$user_name <- as.factor(quiz$user_name) # Change user to factor
+data$classe <- as.factor(data$classe) # Change outcome to factor
+
+realVars <- colSums(is.na(data)) == 0 # Make a vector of the variables without NAs
+data <- data[,realVars, with=FALSE]; quiz <- quiz[,realVars, with=FALSE];
+
+nzv <- nearZeroVar(data) # Remove near zero variance variables
+data <- data[,-nzv, with=FALSE]; quiz <- quiz[,-nzv, with=FALSE]
+```
+Partition the training set to create a training set(60%), validation set(20%) and test set(20%). The size of the dataset allows the use of all three sets. The training set will be used to train the models, the validation set will be used to select the model and the test set will be used to assess the expected out-of-sample error.
+```{r}
+inTrain <- createDataPartition(data$classe, p=0.6, list=FALSE)
+training <- data[inTrain, ]; notTraining <- data[-inTrain, ]
+inValidation <- createDataPartition(notTraining$classe, p=0.5, list=FALSE)
+validation <- notTraining[inValidation, ]; testing <- notTraining[-inValidation, ]
+```
+
+# Machine Learning Model Fits
+Three different model fits will be attempted: decision tree, random forest and generalized boosted regression. The results of the models will be stored in a matrix for comparison later.
+```{r}
+models <- matrix(nrow=3, ncol=2) # Rows: models, Columns: accuracy on validation set and elapsed running time
+colnames(models) <- c("Accuracy", "Elapsed"); rownames(models) <- c("dt","rf","gbm");
+```
+
+### Decision Tree
+First, fit a decision tree and review the model. The decision tree was chosen as the first model because of its speed and simplicity.
+```{r cache=TRUE, warning=FALSE, message=FALSE}
+registerDoParallel(cluster) # Start cluster for parallel processing
+dtControl <- trainControl(method="none", allowParallel=TRUE) # Turn off resampling (increases speed)
+dtTune <- data.frame(cp=0.01) # Only split if lack of fit is greater than 0.01 (increases accuracy)
+models[1,2] <- system.time(dtModel <- train(classe ~ ., data=training, method="rpart", trControl=dtControl, 
+                                            tuneGrid=dtTune))[3]
+dtPrediction <- predict(dtModel, validation); dtModel
+fancyRpartPlot(dtModel$finalModel)
+# Create confusion matrix, save model accuracy and print results
+cm <- confusionMatrix(dtPrediction, validation$classe); models[1,1] <- cm$overall['Accuracy']; cm
+```
+The accuracy on the validation set was 0.9136. The plot reveals that the raw timestamp part 1 and window number were key features for the model. The belt roll, forearm pitch and dumbell magnet y and z axes were also important features. 
+
+### Random Forest
+Next, fit a random forest. The random forest was chosen as the second model due to its high degree of accuracy. Random forest are typically among the best performing models for most machine learning problems. K-fold cross-validation with 10 folds will be used for resampling.
+```{r cache=TRUE, warning=FALSE, message=FALSE}
+fitControl <- trainControl(method="cv", number=10, allowParallel=TRUE) # Set resampling method to 10-fold cv
+models[2,2] <- system.time(rfModel <- train(classe ~ ., data=training, method="rf", trControl=fitControl))[3] 
+rfPrediction <- predict(rfModel, validation); rfModel
+plot(rfModel)
+cm <- confusionMatrix(rfPrediction, validation$classe); models[2,1] <- cm$overall['Accuracy']; cm
+```
+As expected, the random forest yields much higher accuracy than the simple decision tree model. Accuracy was 0.9995 on the validation set.
+
+### Generalized Boosted Regression
+Finally, fit a generalized boosted regression model. The generalized boosted regression model uses trees for boosting and was chosen as the final model due to the high accuracy typically associated with boosting and the speed associated with trees.
+```{r cache=TRUE, warning=FALSE, message=FALSE}
+models[3,2] <- system.time(gbmModel <- train(classe ~ ., data=training, method="gbm", trControl=fitControl))[3]
+gbmPrediction <- predict(gbmModel, validation); gbmModel
+plot(gbmModel)
+cm <- confusionMatrix(gbmPrediction, validation$classe); models[3,1] <- cm$overall['Accuracy']; cm
+
+stopCluster(cluster) # Stop the parallel processing cluster
+```
+While more accurate than the decision tree model at 0.9977, the generalized boosted regression model is not quite as accurate as the random forest model.
+
+# Model Selection and Out-of-sample Error
+Compare the models using the matrix of accuracy and run time.
+```{r}
+models
+```
+Each model has an advantage. The decision tree model is by far the fastest, but trades this for lower accuracy. The generalized boosted regression model strikes a balance between performance and accuracy. The random forest model has a slight edge in accuracy over the generalized boosted model and is selected as the final model for this project. View details of the model.
+```{r warning=FALSE, message=FALSE}
+varImp(rfModel) # Display important variables identified by the model
+rfModel$finalModel # Display details of final model
+```
+Much like the decision tree, key features include raw timestamp part 1, window number, belt roll, forearm pitch and the dumbell magnet y and z axes. Evaluate the final model on the test set to estimate out-of-sample error.
+```{r}
+testPrediction <- predict(rfModel, testing)
+confusionMatrix(testPrediction, testing$classe)
+```
+The model achieves an accuracy of 0.998 on the test set. Since the test set was not used in any way during the model training, out-of-sample error is estimated to be 0.002.
+
+# Prediction Quiz
+Finally, predict the 20 test cases for the quiz. 
+```{r}
+quizPredictions <- predict(rfModel, quiz)
+quizPredictions
+```
+The results are 100% accuracy on the quiz dataset.
+
+# Conclusion
+### Summary
+The random forest model was selected due to its high accuracy. The generalized boosted regression model would make a strong candidate in situtations where faster performance is needed without much loss of accuracy. The decision tree is surpisingly accurate for such a simple model and very fast. All three models created in this project are most likely overfit to the data, particulary concerning the user name and time reference features, and the true out-of-sample error would likely be higher if applied to a dataset with new users.
+
+### Improvements
+The controls for the models could potentially be tuned further to improve results marginally. The models may generalize better to real world data if the user name and time reference features were removed. The dataset could be improved by collecting information about the height, weight and other physical characteristics of the user, as is commonly recordered on modern exercise measurement devices like Fitbit.
+
