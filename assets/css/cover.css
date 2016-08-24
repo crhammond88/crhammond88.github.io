@@ -177,11 +177,9 @@ p {
   .cover-container {
     width: 700px;
   }
+}
   
 .mobile-spacer {
 	visibility: hidden;
 	margin-top: 40vh;
-}
-
-
 }
