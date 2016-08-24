@@ -86,4 +86,9 @@ body {
 
 .invis {
 	visibility: hidden;
-	}
+}
+	
+.col-centered{
+    float: none;
+    margin: 0 auto;
+}
